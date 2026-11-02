@@ -3,29 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>吃药大转盘</title>
-<link rel="stylesheet" href="css/style.css?v=4">
+<title>像素大转盘 · 抽奖模板</title>
+<link rel="stylesheet" href="css/style.css?v=7">
 </head>
 <body>
   <header class="topbar">
-    <div class="title">吃药大转盘</div>
+    <div class="title">像素大转盘</div>
     <div class="right">
-      <span class="remain" id="remain">剩余 14/14</span>
+      <span class="remain" id="remain">剩余 0/0</span>
+      <button class="text-btn" id="settingsBtn">设置</button>
       <button class="text-btn" id="muteBtn">声音 开</button>
       <div class="red-wrap">
         <div class="pixel-ring" id="resetRing"></div>
-        <button class="red-btn" id="resetBtn" title="工作人员补货后长按 2 秒">RESET</button>
+        <button class="red-btn" id="resetBtn" title="全部抽完后长按 2 秒重置">RESET</button>
       </div>
     </div>
   </header>
 
   <main>
-    <div class="ampm-badge" id="ampmBadge">白天 · 上午的药</div>
+    <button class="ampm-badge" id="ampmBadge" title="点击切换昼夜">白天</button>
     <canvas id="stage" width="560" height="560"></canvas>
     <div class="status" id="status">正在载入…</div>
   </main>
 
-  <footer class="footer">点击恐龙或按空格跳跃 · 素材来自网络 · 仅内部使用</footer>
+  <footer class="footer">点击恐龙或按空格开始 · 自定义结算片段放 assets/clips/ · 点顶部徽章切换昼夜</footer>
 
   <!-- 结算视频 -->
   <div class="overlay hidden" id="clipOverlay">
@@ -40,16 +41,47 @@
     </div>
   </div>
 
-  <!-- 周日下午特别奖励 -->
+  <!-- 特别奖励 -->
   <div class="overlay hidden" id="giftOverlay">
     <div class="gift-card">
       <img id="giftImg" alt="小礼品">
-      <div class="gift-big">周日 · 下午 特别奖励！</div>
+      <div class="gift-big">隐藏大奖 · 特别奖励！</div>
       <div class="gift-sub">额外小礼品一份，找工作人员领取</div>
     </div>
   </div>
 
-  <script src="js/clips.js?v=4"></script>
-  <script src="js/app.js?v=5"></script>
+  <!-- 控制面板 -->
+  <div class="overlay hidden" id="panelOverlay">
+    <div class="panel-card">
+      <div class="panel-title">控制面板</div>
+
+      <div class="panel-rows">
+        <label class="p-row"><span>昼夜自动循环</span><input type="checkbox" id="cfgAutoTheme"></label>
+        <label class="p-row"><span>奖位选择方式</span>
+          <select id="cfgSlotMode">
+            <option value="theme">按昼夜（白天第1格 / 夜晚最后1格）</option>
+            <option value="random">剩余随机</option>
+          </select>
+        </label>
+        <label class="p-row"><span>奖位名称（逗号分隔）</span><input type="text" id="cfgPrizeNames" placeholder="上午，下午"></label>
+        <label class="p-row"><span>隐藏大奖彩蛋（最后一格）</span><input type="checkbox" id="cfgEgg"></label>
+      </div>
+
+      <div class="panel-title2">转盘选项（<span id="optCount">7</span>/12）—— 名称 + 奖品数</div>
+      <div id="optionRows"></div>
+      <button class="text-btn" id="addOption">+ 加一个选项</button>
+
+      <div class="panel-btns">
+        <button class="pixel-btn small" id="cfgSave">保存并应用</button>
+        <button class="pixel-btn small" id="cfgDefaults">恢复默认</button>
+        <button class="pixel-btn small" id="cfgClear">清空进度</button>
+        <button class="pixel-btn small" id="cfgClose">关闭</button>
+      </div>
+      <div class="panel-tip">提示：名称建议 2~4 个字；改小选项/奖品数会丢弃对应进度</div>
+    </div>
+  </div>
+
+  <script src="js/clips.js?v=7"></script>
+  <script src="js/app.js?v=7"></script>
 </body>
 </html>

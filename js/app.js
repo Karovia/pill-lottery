@@ -1,39 +1,35 @@
-/* ===== 吃药大转盘 · 极简版主逻辑 =====
-   恐龙站在转盘正中央。点击恐龙/按空格 → 恐龙跳过滑过的仙人掌 → 转盘开转
-   → 停在某个星期 → 按当前昼夜主题给出上午/下午的药 → 播放"喊你吃药"结算视频
-   14 副药抽完后长按红色 RESET 按钮（工作人员补货用）。 */
+/* ===== 通用像素抽奖模板 · 主逻辑 =====
+   转盘有 N 个可配置选项（默认"周一~周日"），每个选项下挂 M 个奖品位（默认上午/下午）。
+   点击恐龙/按空格 → 跳过仙人掌 → 转盘抽出某个选项 → 按抽奖方式给出其中一个奖品位
+   → 播放对应结算素材（缺失时降级为像素卡片）→ 扇形填充标记。
+   全部奖品抽完后长按 RESET → 仙人掌撞倒恐龙 GAME OVER → 清空重开。
+   选项/奖品/名称/昼夜模式都在控制面板（右上角"设置"）里调。 */
 (function () {
   'use strict';
 
-  // 页面错误自捕获（内部调试：控制台看 __errs）
+  // 页面错误自捕获（控制台看 __errs）
   window.__errs = [];
   window.addEventListener('error', function (e) {
     window.__errs.push((e.message || String(e.error)) + ' @' + (e.lineno || '?'));
   });
 
   // ---------- 常量 ----------
-  var DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-  var DAY_NAMES = { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' };
-  var AMPM_NAMES = { am: '上午', pm: '下午' };
-  var ALL_SLOTS = [];
-  DAYS.forEach(function (d) { ALL_SLOTS.push(d + '_am', d + '_pm'); });
-
   var SPRITES = ['dino_run1', 'dino_run2', 'dino_run3', 'dino_stand', 'dino_crash', 'cactus_small', 'cactus_large'];
 
   // 舞台几何（逻辑 560x560）
   var S = 560, CX = 280, CY = 280;
-  var R_OUT = 245;          // 转盘外半径
-  var R_HUB = 96;           // 中央舞台半径
-  var GROUND_HALF = 80;     // 中央地面线半宽
+  var R_OUT = 245, R_HUB = 96, GROUND_HALF = 80;
   var JUMP_V = -470, GRAVITY = 2300;
-  var CACTUS_SPEED = 489;   // 仙人掌滑过速度 px/s
+  var CACTUS_SPEED = 489;
   var SPIN_MS = 4200;
-  var HOLD_MS = 2000;       // RESET 长按
+  var HOLD_MS = 2000;
+
+  var MAX_OPTIONS = 12, MAX_PRIZES = 6;
 
   // 昼夜配色（夜晚 = 黑白反转）；切换时画布与页面同步 0.5s 线性渐变
   var PAL_DAY = { bg: '#f7f7f7', ink: '#2b2b2b', soft: '#8a8a8a', seg: '#ffffff', seg2: '#f1f1f1', taken: '#dcdcdc', half: '#cfcfcf' };
   var PAL_NIGHT = { bg: '#0a0a0a', ink: '#f2f2f2', soft: '#777777', seg: '#161616', seg2: '#1e1e1e', taken: '#2c2c2c', half: '#3a3a3a' };
-  var themeMix = 0;   // 0 = 白天, 1 = 夜晚
+  var themeMix = 0;
   function hexLerp(a, b, t) {
     var r1 = parseInt(a.slice(1, 3), 16), g1 = parseInt(a.slice(3, 5), 16), b1 = parseInt(a.slice(5, 7), 16);
     var r2 = parseInt(b.slice(1, 3), 16), g2 = parseInt(b.slice(3, 5), 16), b2 = parseInt(b.slice(5, 7), 16);
@@ -45,43 +41,102 @@
     return out;
   }
 
+  // ---------- 配置 ----------
+  function defaultConfig() {
+    return {
+      v: 2,
+      autoTheme: true,          // 昼夜自动循环
+      slotMode: 'theme',        // theme = 昼抽第1格/夜抽最后1格；random = 剩余随机
+      prizeNames: ['上午', '下午'],
+      eggEnabled: true,         // 隐藏大奖：最后一个选项的最后一个奖品
+      options: [
+        { label: '周一', prizes: 2 },
+        { label: '周二', prizes: 2 },
+        { label: '周三', prizes: 2 },
+        { label: '周四', prizes: 2 },
+        { label: '周五', prizes: 2 },
+        { label: '周六', prizes: 2 },
+        { label: '周日', prizes: 2 },
+      ],
+    };
+  }
+
   // ---------- 状态 ----------
   var state = {
-    mode: 'idle',            // idle | jump | spin | clip | banner-wait | locked
+    mode: 'idle',            // idle | jump | spin | clip | banner | reset | locked
     theme: 'day',
-    drawn: {},
     muted: false,
+    config: defaultConfig(),
+    drawn: {},               // "选项下标:奖品下标" -> 时间戳
   };
-  var cfg = window.CLIP_CONFIG || {};
+  var clipCfg = window.CLIP_CONFIG || {};
 
   function saveState() {
     try {
-      localStorage.setItem('pillLottery.v1', JSON.stringify({ drawn: state.drawn, muted: state.muted }));
+      localStorage.setItem('pillLottery.v2', JSON.stringify({
+        v: 2, config: state.config, drawn: state.drawn, muted: state.muted,
+      }));
     } catch (e) {}
   }
   function loadState() {
     try {
-      var raw = localStorage.getItem('pillLottery.v1');
-      if (!raw) return;
-      var d = JSON.parse(raw);
-      if (d && d.drawn) { state.drawn = d.drawn; state.muted = !!d.muted; }
+      var raw = localStorage.getItem('pillLottery.v2');
+      if (raw) {
+        var d = JSON.parse(raw);
+        if (d && d.config && d.config.options && d.config.options.length) {
+          state.config = d.config;
+          state.drawn = d.drawn || {};
+          state.muted = !!d.muted;
+          return;
+        }
+      }
+      // v1（吃药周历版）迁移：mon_am -> "0:0"
+      var old = localStorage.getItem('pillLottery.v1');
+      if (old) {
+        var d1 = JSON.parse(old);
+        var map = { mon: 0, tue: 1, wed: 2, thu: 3, fri: 4, sat: 5, sun: 6 };
+        var nd = {};
+        if (d1 && d1.drawn) Object.keys(d1.drawn).forEach(function (k) {
+          var p = k.split('_');
+          if (map[p[0]] !== undefined) nd[map[p[0]] + ':' + (p[1] === 'pm' ? 1 : 0)] = d1.drawn[k];
+        });
+        state.drawn = nd;
+        state.muted = !!d1.muted;
+        saveState();
+        localStorage.removeItem('pillLottery.v1');
+      }
     } catch (e) {}
   }
-  function remainingCount() {
+
+  function totalPrizes() {
     var n = 0;
-    ALL_SLOTS.forEach(function (s) { if (state.drawn[s]) n++; });
-    return 14 - n;
+    state.config.options.forEach(function (o) { n += o.prizes; });
+    return n;
   }
-  function isAllDone() { return remainingCount() === 0; }
-  function dayEligible(day) { return !state.drawn[day + '_am'] || !state.drawn[day + '_pm']; }
+  function drawnCount() { return Object.keys(state.drawn).length; }
+  function optionDrawn(i) {
+    var n = 0;
+    for (var k in state.drawn) if (k.split(':')[0] === String(i)) n++;
+    return n;
+  }
+  function isAllDone() { return drawnCount() >= totalPrizes(); }
+  function slotName(oi, pj) {
+    var names = state.config.prizeNames || [];
+    return names[pj] || '奖品' + (pj + 1);
+  }
+  function slotKey(oi, pj) { return oi + ':' + pj; }
+  function clipMeta(key) {
+    var m = clipCfg[key];
+    return m || { file: 'assets/clips/' + key.replace(':', '_') + '.mp4' };
+  }
 
   // ---------- DOM ----------
   var $ = function (id) { return document.getElementById(id); };
   var cv = $('stage'), ctx = cv.getContext('2d');
   var statusEl = $('status'), remainEl = $('remain');
-  var resetBtn = $('resetBtn'), muteBtn = $('muteBtn');
+  var resetBtn = $('resetBtn'), muteBtn = $('muteBtn'), badgeBtn = $('ampmBadge');
 
-  // RESET 按钮外围的像素方块环形进度（14 格）
+  // RESET 按钮外围的像素方块环形进度
   var RING_N = 14, ringSq = [];
   (function buildRing() {
     var ring = $('resetRing'), R = 42, C = 48;
@@ -128,7 +183,6 @@
     coin: function () { tone(988, null, 0.08, 0.06); tone(1319, null, 0.2, 0.06, 'square', 0.08); },
     thud: function () { tone(95, null, 0.14, 0.1, 'square'); tone(55, null, 0.2, 0.09, 'square', 0.05); },
     win: function () { [523, 659, 784, 1047].forEach(function (f, i) { tone(f, null, 0.12, 0.07, 'square', i * 0.09); }); },
-    // 周日下午特别奖励："噔噔噔噔~"
     fanfare: function () {
       [523, 659, 784].forEach(function (f, i) { tone(f, null, 0.13, 0.09, 'square', i * 0.14); });
       tone(1047, null, 0.6, 0.09, 'square', 0.42);
@@ -146,14 +200,13 @@
   });
 
   // ---------- 世界 ----------
-  var rot = -Math.PI / 2;            // 转盘当前角度
+  var rot = -Math.PI / 2;
   var dino = { y: 0, vy: 0, frameT: 0 };
-  var cactus = null;                 // { x }（相对中心的横坐标）
+  var cactus = null;
   var pointerKick = 0;
-  var fillAnim = null;               // { i, from, to, t0 } 抽中扇形填充动画
-  var resetSeq = null;               // RESET 演出：{ t0, hit, done }
+  var fillAnim = null;
+  var resetSeq = null;
   var nextThemeAt = performance.now() + 15000 + Math.random() * 10000;
-  // 传送带地面 + 扬尘（恐龙一直在跑的视觉）
   var TREAD_SPEED = 170;
   var groundDashes = [], dust = [], dashT = 0, dustT = 0;
   var stars = [];
@@ -165,15 +218,30 @@
   // ---------- 状态文字 ----------
   function setStatus(html) { statusEl.innerHTML = html; }
   function idleStatus() {
-    var t = state.theme === 'day' ? '白天 · 抽「上午」的药' : '夜晚 · 抽「下午」的药';
-    setStatus('<span class="soft">' + t + '</span> —— <span class="blink">点击恐龙或按空格</span>');
+    var P = state.config;
+    var head = state.theme === 'day' ? '白天' : '夜晚';
+    if (P.slotMode === 'theme') {
+      var first = slotName(0, 0), last = slotName(0, Math.max(0, P.options[0].prizes - 1));
+      head += state.theme === 'day' ? ' · 抽「' + first + '」' : ' · 抽「' + last + '」';
+    }
+    setStatus('<span class="soft">' + head + '</span> —— <span class="blink">点击恐龙或按空格</span>');
   }
-  function refreshRemain() { remainEl.textContent = '剩余 ' + remainingCount() + '/14'; }
+  function refreshRemain() { remainEl.textContent = '剩余 ' + (totalPrizes() - drawnCount()) + '/' + totalPrizes(); }
 
   // ---------- 主题 ----------
   function applyThemeUI() {
     document.body.classList.toggle('night', state.theme === 'night');
-    $('ampmBadge').textContent = state.theme === 'day' ? '白天 · 抽「上午」的药' : '夜晚 · 抽「下午」的药';
+    var cfg = state.config;
+    var t;
+    if (cfg.slotMode === 'theme') {
+      var M0 = Math.max(1, cfg.options[0].prizes);
+      t = state.theme === 'day'
+        ? '白天 · 抽「' + slotName(0, 0) + '」'
+        : '夜晚 · 抽「' + slotName(0, M0 - 1) + '」';
+    } else {
+      t = state.theme === 'day' ? '白天' : '夜晚';
+    }
+    badgeBtn.textContent = t;
     if (state.mode === 'idle') idleStatus();
   }
   function toggleTheme() {
@@ -183,11 +251,10 @@
     nextThemeAt = performance.now() + 15000 + Math.random() * 10000;
   }
 
-  // ---------- 绘制 ----------
-  // 某天已抽比例 0 / 0.5 / 1（含抽中瞬间的填充动画；动画结束后保持 to 值，等记账后由 finishClip 清除）
-  function dayFrac(i) {
-    var day = DAYS[i];
-    var f = ((state.drawn[day + '_am'] ? 1 : 0) + (state.drawn[day + '_pm'] ? 1 : 0)) / 2;
+  // ---------- 绘制辅助：扇形填充比例 ----------
+  function optionFrac(i) {
+    var M = state.config.options[i].prizes;
+    var f = optionDrawn(i) / M;
     if (fillAnim && fillAnim.i === i) {
       var t = (performance.now() - fillAnim.t0) / 700;
       if (t >= 1) return fillAnim.to;
@@ -197,57 +264,50 @@
     return f;
   }
 
+  // ---------- 绘制 ----------
   function draw() {
     var P = pal();
+    var cfg = state.config;
     ctx.clearRect(0, 0, S, S);
     ctx.imageSmoothingEnabled = false;
 
-    // 背景
     ctx.fillStyle = P.bg;
     ctx.fillRect(0, 0, S, S);
 
-    // ---- 转盘环 ----
+    // ---- 转盘环（N 个扇形） ----
+    var N = cfg.options.length;
+    var SEG = Math.PI * 2 / N;
     ctx.save();
     ctx.translate(CX, CY);
     ctx.rotate(rot);
-    var SEG = Math.PI * 2 / 7;
-    for (var i = 0; i < 7; i++) {
-      var day = DAYS[i];
+    for (var i = 0; i < N; i++) {
       var a0 = i * SEG - Math.PI / 2 - SEG / 2;
-      var frac = dayFrac(i);
+      var frac = optionFrac(i);
       var full = frac >= 0.999;
-      // 底色扇形
+      var k = Math.min(cfg.options[i].prizes, Math.floor(frac * cfg.options[i].prizes + 1e-9));
       ctx.beginPath();
       ctx.moveTo(0, 0);
       ctx.arc(0, 0, R_OUT, a0, a0 + SEG);
       ctx.closePath();
       ctx.fillStyle = full ? P.ink : (i % 2 === 0 ? P.seg : P.seg2);
       ctx.fill();
-      // 已抽部分：半抽填浅色，抽满第二格填 ink
-      if (frac > 0.001 && !full) {
-        if (frac <= 0.5) {
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.arc(0, 0, R_OUT, a0, a0 + SEG * frac);
+      // 已抽格填充
+      if (!full && frac > 0.001) {
+        for (var j = 0; j < k; j++) {
+          ctx.beginPath(); ctx.moveTo(0, 0);
+          ctx.arc(0, 0, R_OUT, a0 + SEG * j / cfg.options[i].prizes, a0 + SEG * (j + 1) / cfg.options[i].prizes);
+          ctx.closePath(); ctx.fillStyle = P.half; ctx.fill();
+        }
+        if (k < cfg.options[i].prizes && frac > k / cfg.options[i].prizes) {
+          var lastSlice = !!(fillAnim && fillAnim.i === i && fillAnim.to === 1 && k === cfg.options[i].prizes - 1);
+          ctx.beginPath(); ctx.moveTo(0, 0);
+          ctx.arc(0, 0, R_OUT, a0 + SEG * k / cfg.options[i].prizes, a0 + SEG * frac);
           ctx.closePath();
-          ctx.fillStyle = P.half;
-          ctx.fill();
-        } else {
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.arc(0, 0, R_OUT, a0, a0 + SEG * 0.5);
-          ctx.closePath();
-          ctx.fillStyle = P.half;
-          ctx.fill();
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.arc(0, 0, R_OUT, a0 + SEG * 0.5, a0 + SEG * frac);
-          ctx.closePath();
-          ctx.fillStyle = P.ink;
+          ctx.fillStyle = lastSlice ? P.ink : P.half;
           ctx.fill();
         }
       }
-      // 标签（抽满反色；描边用底色，避免白字白边糊成一团）
+      // 标签（抽满反色）
       ctx.save();
       ctx.rotate(a0 + SEG / 2);
       ctx.textAlign = 'right';
@@ -255,22 +315,21 @@
       ctx.font = '22px FusionPixel, monospace';
       ctx.lineWidth = 5;
       ctx.strokeStyle = full ? P.ink : P.bg;
-      ctx.strokeText(DAY_NAMES[day], R_OUT - 46, 0);
+      ctx.strokeText(cfg.options[i].label, R_OUT - 46, 0);
       ctx.fillStyle = full ? P.bg : P.ink;
-      ctx.fillText(DAY_NAMES[day], R_OUT - 46, 0);
+      ctx.fillText(cfg.options[i].label, R_OUT - 46, 0);
       ctx.restore();
     }
-    // 扇形分隔线（只画在环带内，不伸进内圈）
+    // 分隔线（只画在环带内）
     ctx.strokeStyle = P.ink;
     ctx.lineWidth = 3;
-    for (var s = 0; s < 7; s++) {
-      var sa = s * SEG - Math.PI / 2 - SEG / 2;
+    for (var s2 = 0; s2 < N; s2++) {
+      var sa = s2 * SEG - Math.PI / 2 - SEG / 2;
       ctx.beginPath();
       ctx.moveTo(Math.cos(sa) * (R_HUB + 6), Math.sin(sa) * (R_HUB + 6));
       ctx.lineTo(Math.cos(sa) * (R_OUT - 2), Math.sin(sa) * (R_OUT - 2));
       ctx.stroke();
     }
-    // 外圈描边
     ctx.beginPath();
     ctx.arc(0, 0, R_OUT - 1.5, 0, Math.PI * 2);
     ctx.strokeStyle = P.ink;
@@ -279,7 +338,6 @@
     ctx.restore();
 
     // ---- 中央舞台 ----
-    // 舞台底盘（盖住扇形向内伸出的边缘），再压一圈描边盖住接缝
     ctx.beginPath();
     ctx.arc(CX, CY, R_HUB + 1, 0, Math.PI * 2);
     ctx.fillStyle = P.bg;
@@ -295,14 +353,13 @@
       var tk = Math.floor(performance.now() / 450);
       ctx.globalAlpha = themeMix;
       ctx.fillStyle = P.ink;
-      stars.forEach(function (s, i) { if ((tk + i) % 8 !== 0) ctx.fillRect(Math.floor(s.x), Math.floor(s.y), s.s, s.s); });
+      stars.forEach(function (s, i2) { if ((tk + i2) % 8 !== 0) ctx.fillRect(Math.floor(s.x), Math.floor(s.y), s.s, s.s); });
       ctx.globalAlpha = 1;
     }
 
     // 中央地面
     ctx.fillStyle = P.ink;
     ctx.fillRect(CX - GROUND_HALF, CY, GROUND_HALF * 2, 2);
-    // 传送带碎屑 + 脚下扬尘（裁剪在小舞台内）
     ctx.save();
     ctx.beginPath();
     ctx.rect(CX - GROUND_HALF, CY - 24, GROUND_HALF * 2, 28);
@@ -318,11 +375,11 @@
 
     // 仙人掌
     if (cactus) {
-      var im = IMG.cactus_small;
-      if (im.complete) ctx.drawImage(im, Math.floor(CX + cactus.x - im.width / 2), CY + 1 - im.height);
+      var im2 = IMG.cactus_small;
+      if (im2.complete) ctx.drawImage(im2, Math.floor(CX + cactus.x - im2.width / 2), CY + 1 - im2.height);
     }
 
-    // 恐龙（四帧跑步循环：左脚前 → 收拢 → 右脚前 → 收拢；RESET 演出中撞死后用 crash 帧）
+    // 恐龙（四帧跑步循环）
     var dim;
     if (state.mode === 'locked' || (state.mode === 'reset' && resetSeq && resetSeq.hit)) dim = IMG.dino_crash;
     else if (state.mode === 'jump') dim = IMG.dino_stand;
@@ -331,7 +388,7 @@
       ctx.drawImage(dim, CX - Math.floor(dim.width / 2), Math.floor(CY + 1 - dim.height + dino.y));
     }
 
-    // ---- 指针 ----
+    // 指针
     ctx.save();
     ctx.translate(CX, CY - R_OUT - 8);
     ctx.rotate(pointerKick);
@@ -342,9 +399,7 @@
     ctx.strokeStyle = P.bg; ctx.lineWidth = 3; ctx.stroke();
     ctx.restore();
 
-    // ---- 中奖扇区闪烁（已改为填充动画，见 dayFrac） ----
-
-    // ---- RESET 演出：GAME OVER ----
+    // RESET 演出：GAME OVER
     if (state.mode === 'reset' && resetSeq && resetSeq.hit) {
       ctx.font = '26px FusionPixel, monospace';
       ctx.textAlign = 'center';
@@ -365,7 +420,7 @@
     if (pointerKick !== 0) pointerKick *= 0.8;
     if (pointerKick < 0.003) pointerKick = 0;
 
-    // 昼夜渐变：调色板同时驱动画布与页面 CSS 变量，天然同步
+    // 昼夜渐变：调色板同时驱动画布与页面 CSS 变量
     var target = state.theme === 'night' ? 1 : 0;
     if (themeMix !== target) {
       themeMix += (target > themeMix ? 1 : -1) * dt / 0.5;
@@ -378,8 +433,8 @@
       st.setProperty('--soft', P0.soft);
     }
 
-    // 传送带地面：碎屑不断向左滚（抽完锁定时世界静止）
-    if (state.mode !== 'locked') {
+    // 传送带地面 + 扬尘
+    if (state.mode !== 'locked' && state.mode !== 'reset') {
       dashT -= dt;
       if (dashT <= 0) {
         dashT = 0.18 + Math.random() * 0.38;
@@ -387,7 +442,6 @@
       }
       groundDashes.forEach(function (d) { d.x -= TREAD_SPEED * dt; });
       groundDashes = groundDashes.filter(function (d) { return d.x > -GROUND_HALF - 18; });
-      // 脚步扬尘：每 0.2s 一步（跳跃时脚离地不起尘）
       dustT -= dt;
       if (dustT <= 0 && state.mode !== 'jump') {
         dustT = 0.2;
@@ -397,8 +451,7 @@
     dust.forEach(function (p) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 40 * dt; p.life -= dt; });
     dust = dust.filter(function (p) { return p.life > 0; });
 
-    if (state.mode === 'idle') rot += dt * 0.1;           // 待机慢转
-    if (state.mode === 'spin') { /* 由 startSpin 驱动 */ }
+    if (state.mode === 'idle') rot += dt * 0.1;
 
     if (state.mode === 'jump') {
       dino.vy += GRAVITY * dt;
@@ -407,7 +460,7 @@
       if (dino.y >= 0) {
         dino.y = 0; dino.vy = 0;
         state.mode = 'spin';
-        for (var di = 0; di < 6; di++) {   // 落地扬尘
+        for (var di = 0; di < 6; di++) {
           dust.push({ x: CX - 16 + Math.random() * 8, y: CY - 3, vx: -90 + Math.random() * 60, vy: -30 - Math.random() * 30, life: 0.5 + Math.random() * 0.3 });
         }
         sfx.land();
@@ -418,7 +471,7 @@
       if (cactus.x < -160) cactus = null;
     }
 
-    // RESET 演出：仙人掌滑入 → 撞上恐龙 → GAME OVER → 重新开始
+    // RESET 演出
     if (state.mode === 'reset' && resetSeq) {
       if (!resetSeq.hit) {
         cactus.x -= CACTUS_SPEED * dt;
@@ -427,7 +480,7 @@
           resetSeq.hit = true;
           dino.landShake = 0.25;
           sfx.thud();
-          setStatus('GAME OVER —— 药品补货确认，重新开始…');
+          setStatus('GAME OVER —— 已清空全部进度，重新开始…');
         }
       }
       if (resetSeq.hit && !resetSeq.done && now - resetSeq.t0 > 2200) {
@@ -436,7 +489,9 @@
       }
     }
 
-    if (state.mode === 'idle' && now > nextThemeAt) toggleTheme();
+    // 昼夜自动循环（仅待机）
+    if (state.config.autoTheme && state.mode === 'idle' && now > nextThemeAt) toggleTheme();
+    if ((state.mode === 'locked' || state.mode === 'reset') && now > nextThemeAt) nextThemeAt = now + 5000;
   }
 
   // ---------- 触发抽奖 ----------
@@ -454,32 +509,48 @@
   // ---------- 转盘 ----------
   var spinning = false, tickIdx = -1;
   function segIndexAtPointer() {
-    // 指针在正上方（屏幕角 -π/2）；扇区 i 的局部中心角 = i*SEG - π/2
-    var SEG = Math.PI * 2 / 7;
+    var N = state.config.options.length;
+    var SEG = Math.PI * 2 / N;
     var local = ((-Math.PI / 2 - rot) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
     var shifted = (local + Math.PI / 2 + SEG / 2) % (Math.PI * 2);
-    return Math.floor(shifted / SEG) % 7;
+    return Math.floor(shifted / SEG) % N;
   }
+
+  // 候选选项：严格按当前抽奖方式
+  function computeEligible() {
+    var opts = state.config.options;
+    var list = [];
+    if (state.config.slotMode === 'theme') {
+      for (var i = 0; i < opts.length; i++) {
+        var w = state.theme === 'day' ? 0 : opts[i].prizes - 1;
+        if (!state.drawn[slotKey(i, w)]) list.push({ i: i, want: w });
+      }
+      return { list: list, themeMode: true };
+    }
+    for (var j = 0; j < opts.length; j++) {
+      if (optionDrawn(j) < opts[j].prizes) list.push({ i: j, want: -1 });
+    }
+    return { list: list, themeMode: false };
+  }
+
   function startSpin() {
-    // 严格按当前主题抽：白天只抽还有「上午」余位的星期，绝不跨抽
-    var want = state.theme === 'day' ? 'am' : 'pm';
+    var cfg = state.config;
     var note = '';
-    var eligible = [];
-    DAYS.forEach(function (d) { if (!state.drawn[d + '_' + want]) eligible.push(d); });
-    if (!eligible.length) {
-      // 该主题的药已发完 → 自动翻转到另一侧
-      var ranOut = want === 'am' ? '上午' : '下午';
+    var el = computeEligible();
+    if (!el.list.length && cfg.slotMode === 'theme') {
+      var ranOut = state.theme === 'day' ? slotName(0, 0) : slotName(0, Math.max(0, cfg.options[0].prizes - 1));
       toggleTheme();
-      want = state.theme === 'day' ? 'am' : 'pm';
-      DAYS.forEach(function (d) { if (!state.drawn[d + '_' + want]) eligible.push(d); });
-      note = '「' + ranOut + '」的药已抽完，本轮切到「' + (want === 'am' ? '上午' : '下午') + '」';
+      el = computeEligible();
+      note = '「' + ranOut + '」的奖品已抽完，本轮切到「' + (state.theme === 'day' ? slotName(0, 0) : slotName(0, Math.max(0, cfg.options[0].prizes - 1))) + '」';
     }
     setStatus('转盘旋转中…' + (note ? ' ' + note : ''));
-    var targetDay = eligible[Math.floor(Math.random() * eligible.length)];
-    var i = DAYS.indexOf(targetDay);
-    var SEG = Math.PI * 2 / 7;
+
+    var pick = el.list[Math.floor(Math.random() * el.list.length)];
+    var targetIdx = pick.i;
+    var i = targetIdx;
+    var N = cfg.options.length;
+    var SEG = Math.PI * 2 / N;
     var jitter = (Math.random() - 0.5) * SEG * 0.5;
-    // 让扇区 i 的中心停在指针（正上方）下：rot ≡ -i*SEG
     var finalRot = -i * SEG + jitter;
     var turns = 6 + Math.random() * 2;
     var startRot = rot;
@@ -500,62 +571,72 @@
       else {
         spinning = false;
         sfx.coin();
-        var slot = targetDay + '_' + want;
-        // 扇形填充动画：从已抽比例推进一格
-        var c = (state.drawn[targetDay + '_am'] ? 1 : 0) + (state.drawn[targetDay + '_pm'] ? 1 : 0);
-        fillAnim = { i: i, from: c / 2, to: (c + 1) / 2, t0: performance.now() };
-        var sp = slot.split('_');
-        setStatus('『' + DAY_NAMES[sp[0]] + ' · ' + AMPM_NAMES[sp[1]] + '』' + note);
-        setTimeout(function () { playClip(slot); }, 700);
+        var M = cfg.options[targetIdx].prizes;
+        var pj;
+        if (el.themeMode) {
+          pj = pick.want;
+        } else {
+          var remaining = [];
+          for (var j = 0; j < M; j++) if (!state.drawn[slotKey(targetIdx, j)]) remaining.push(j);
+          pj = remaining[Math.floor(Math.random() * remaining.length)];
+        }
+        var c = optionDrawn(targetIdx);
+        fillAnim = { i: targetIdx, from: c / M, to: (c + 1) / M, t0: performance.now() };
+        pendingSlot = slotKey(targetIdx, pj);
+        setStatus('『' + cfg.options[targetIdx].label + ' · ' + slotName(targetIdx, pj) + '』' + note);
+        setTimeout(function () { playClip(pendingSlot); }, 700);
       }
     }
     requestAnimationFrame(step);
   }
+
+  var pendingSlot = null;
 
   // ---------- 结算视频 ----------
   var clipOverlay = $('clipOverlay'), clipVideo = $('clipVideo');
   var clipFallback = $('clipFallback'), fallbackQuote = $('fallbackQuote'), fallbackSource = $('fallbackSource');
   var currentSlot = null, typeTimer = null;
 
-  function playClip(slot) {
+  function playClip(key) {
     state.mode = 'clip';
-    currentSlot = slot;
-    var meta = cfg[slot] || {};
-    var p = slot.split('_');
-    $('clipTitle').textContent = DAY_NAMES[p[0]] + ' · ' + AMPM_NAMES[p[1]] + (meta.source ? ' ｜ ' + meta.source : '');
+    currentSlot = key;
+    var p = key.split(':');
+    var meta = clipMeta(key);
+    $('clipTitle').textContent = state.config.options[+p[0]].label + ' · ' + slotName(+p[0], +p[1]) +
+      (meta.source ? ' ｜ ' + meta.source : '');
     clipFallback.classList.add('hidden');
     clipVideo.classList.remove('hidden');
     clipOverlay.classList.remove('hidden');
 
     if (meta.file) {
       clipVideo.dataset.retried = '';
-      clipVideo.src = meta.file + '?v=6';          // 带版本号，避开旧缓存
+      clipVideo.src = meta.file + '?v=6';
       clipVideo.onerror = function () {
-        // 第一次失败自动换时间戳重试一次（应对缓存/瞬态错误）
         if (clipVideo.dataset.retried !== '1') {
           clipVideo.dataset.retried = '1';
           clipVideo.src = meta.file + '?r=' + Date.now();
           var pr = clipVideo.play();
-          if (pr && pr.catch) pr.catch(function () { showFallback(meta); });
+          if (pr && pr.catch) pr.catch(function () { showFallback(meta, key); });
           return;
         }
-        showFallback(meta);
+        showFallback(meta, key);
       };
       clipVideo.onended = finishClip;
-      var p = clipVideo.play();
-      if (p && p.catch) p.catch(function () { showFallback(meta); });
+      var pr = clipVideo.play();
+      if (pr && pr.catch) pr.catch(function () { showFallback(meta, key); });
     } else {
-      showFallback(meta);
+      showFallback(meta, key);
     }
   }
-  function showFallback(meta) {
+  function showFallback(meta, key) {
     clipVideo.onerror = null; clipVideo.onended = null;
     clipVideo.pause(); clipVideo.removeAttribute('src');
     clipVideo.classList.add('hidden');
     clipFallback.classList.remove('hidden');
     fallbackQuote.textContent = '';
-    fallbackSource.textContent = meta.source ? '—— ' + meta.source : '';
-    var q = meta.quote || '按时吃药，身体棒棒！';
+    var p = key.split(':');
+    fallbackSource.textContent = meta.source || state.config.options[+p[0]].label + ' · ' + slotName(+p[0], +p[1]);
+    var q = meta.quote || slotName(+p[0], +p[1]) + '！恭喜！';
     var i = 0;
     clearInterval(typeTimer);
     typeTimer = setInterval(function () {
@@ -573,11 +654,13 @@
     state.drawn[currentSlot] = Date.now();
     saveState();
     refreshRemain();
-    fillAnim = null;   // 记账完成，扇形填充交给真实状态
+    fillAnim = null;
 
-    var p = currentSlot.split('_');
-    var special = currentSlot === 'sun_pm';   // 周日·下午 = 展示场特别奖励
-    setStatus('抽中 ' + DAY_NAMES[p[0]] + '·' + AMPM_NAMES[p[1]] + ' 的药！' + (special ? ' 额外小礼品一份！' : ''));
+    var p = currentSlot.split(':');
+    var oi = +p[0], pj = +p[1];
+    var opts = state.config.options;
+    var special = state.config.eggEnabled && oi === opts.length - 1 && pj === opts[oi].prizes - 1;
+    setStatus('抽中 ' + opts[oi].label + '·' + slotName(oi, pj) + '！' + (special ? ' 额外小礼品一份！' : ''));
 
     if (special) {
       sfx.fanfare();
@@ -640,16 +723,16 @@
     fx.globalAlpha = 1;
   }
 
-  // ---------- 周日下午特别奖励 ----------
+  // ---------- 特别奖励 ----------
   function drawGiftURL() {
     var c = document.createElement('canvas'); c.width = 22; c.height = 22;
     var x = c.getContext('2d');
     var BOX = '#e5595e', RIB = '#ffd43b', DK = '#2b2b2b';
-    x.fillStyle = RIB; x.fillRect(5, 2, 5, 3); x.fillRect(12, 2, 5, 3);   // 蝴蝶结
-    x.fillStyle = DK;  x.fillRect(10, 1, 2, 5);                            // 结
-    x.fillStyle = BOX; x.fillRect(2, 7, 18, 4);                            // 盒盖
-    x.fillStyle = RIB; x.fillRect(10, 7, 2, 13);                           // 竖丝带
-    x.fillStyle = BOX; x.fillRect(3, 11, 16, 9);                           // 盒身
+    x.fillStyle = RIB; x.fillRect(5, 2, 5, 3); x.fillRect(12, 2, 5, 3);
+    x.fillStyle = DK;  x.fillRect(10, 1, 2, 5);
+    x.fillStyle = BOX; x.fillRect(2, 7, 18, 4);
+    x.fillStyle = RIB; x.fillRect(10, 7, 2, 13);
+    x.fillStyle = BOX; x.fillRect(3, 11, 16, 9);
     x.fillStyle = DK;
     x.fillRect(2, 6, 18, 1); x.fillRect(2, 10, 18, 1); x.fillRect(3, 20, 16, 1);
     x.fillRect(2, 7, 1, 3); x.fillRect(19, 7, 1, 3);
@@ -670,7 +753,7 @@
   // ---------- 锁定 / RESET（长按） ----------
   function enterLocked() {
     state.mode = 'locked';
-    setStatus('14 副药已全部抽完，等待工作人员补货 —— <span class="blink">长按红色 RESET 按钮</span>');
+    setStatus('全部奖品已抽完，等待工作人员补货 —— <span class="blink">长按红色 RESET 按钮</span>');
     resetBtn.classList.add('locked');
     sfx.sad();
   }
@@ -703,17 +786,14 @@
     resetBtn.classList.remove('holding');
     setRing(0);
     if (holdRaf) cancelAnimationFrame(holdRaf);
-    if (state.mode === 'idle' || state.mode === 'locked') {
-      if (state.mode === 'idle') idleStatus();
-      else setStatus('14 副药已全部抽完，等待工作人员补货 —— <span class="blink">长按红色 RESET 按钮</span>');
-    }
+    if (state.mode === 'idle') idleStatus();
+    else if (state.mode === 'locked') enterLocked();
   }
   resetBtn.addEventListener('pointerdown', holdStartFn);
   resetBtn.addEventListener('pointerup', holdEndFn);
   resetBtn.addEventListener('pointerleave', holdEndFn);
   resetBtn.addEventListener('pointercancel', holdEndFn);
 
-  // 长按完成 → RESET 演出：仙人掌滑入撞死恐龙 → GAME OVER → 自动重新开始
   function startResetSequence() {
     holding = false;
     resetBtn.classList.remove('holding', 'locked');
@@ -724,8 +804,6 @@
     cactus = { x: GROUND_HALF + 8 };
     setStatus('RESET…');
   }
-
-  // 演出结束时的真正重置
   function actualReset() {
     resetSeq = null;
     cactus = null;
@@ -739,9 +817,122 @@
     nextThemeAt = performance.now() + 8000;
   }
 
-  // ---------- 静音 ----------
+  // ---------- 控制面板 ----------
+  var panelOverlay = $('panelOverlay');
+  var editing = null;   // 面板编辑中的配置副本
+
+  function openPanel() {
+    editing = JSON.parse(JSON.stringify(state.config));
+    fillPanel();
+    panelOverlay.classList.remove('hidden');
+  }
+  function closePanel() { panelOverlay.classList.add('hidden'); }
+
+  function fillPanel() {
+    $('cfgAutoTheme').checked = !!editing.autoTheme;
+    $('cfgSlotMode').value = editing.slotMode;
+    $('cfgPrizeNames').value = (editing.prizeNames || []).join('，');
+    $('cfgEgg').checked = !!editing.eggEnabled;
+    renderOptionRows();
+  }
+  function renderOptionRows() {
+    var box = $('optionRows');
+    box.innerHTML = '';
+    editing.options.forEach(function (o, i) {
+      var row = document.createElement('div');
+      row.className = 'opt-row';
+      var idx = document.createElement('span');
+      idx.className = 'opt-idx'; idx.textContent = (i + 1) + '.';
+      var label = document.createElement('input');
+      label.type = 'text'; label.value = o.label; label.maxLength = 8;
+      label.className = 'opt-label'; label.placeholder = '名称';
+      var prizes = document.createElement('input');
+      prizes.type = 'number'; prizes.min = 1; prizes.max = MAX_PRIZES;
+      prizes.value = o.prizes; prizes.className = 'opt-prizes'; prizes.title = '奖品数量';
+      var del = document.createElement('button');
+      del.className = 'text-btn opt-del'; del.textContent = '删除';
+      del.disabled = editing.options.length <= 2;
+      del.addEventListener('click', function () {
+        editing.options.splice(i, 1);
+        renderOptionRows();
+      });
+      label.addEventListener('input', function () { o.label = label.value; });
+      prizes.addEventListener('input', function () {
+        var v = Math.max(1, Math.min(MAX_PRIZES, parseInt(prizes.value, 10) || 1));
+        o.prizes = v;
+      });
+      row.appendChild(idx); row.appendChild(label); row.appendChild(prizes); row.appendChild(del);
+      box.appendChild(row);
+    });
+    $('optCount').textContent = editing.options.length;
+    $('addOption').disabled = editing.options.length >= MAX_OPTIONS;
+  }
+  $('addOption').addEventListener('click', function () {
+    if (editing.options.length >= MAX_OPTIONS) return;
+    editing.options.push({ label: '选项' + (editing.options.length + 1), prizes: 1 });
+    renderOptionRows();
+  });
+
+  function collectPanel() {
+    editing.autoTheme = $('cfgAutoTheme').checked;
+    editing.slotMode = $('cfgSlotMode').value;
+    var names = $('cfgPrizeNames').value.split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean);
+    editing.prizeNames = names.length ? names : [];
+    editing.eggEnabled = $('cfgEgg').checked;
+  }
+
+  $('settingsBtn').addEventListener('click', openPanel);
+  $('cfgClose').addEventListener('click', closePanel);
+  panelOverlay.addEventListener('click', function (e) { if (e.target === panelOverlay) closePanel(); });
+  $('cfgDefaults').addEventListener('click', function () {
+    editing = defaultConfig();
+    fillPanel();
+  });
+  $('cfgClear').addEventListener('click', function () {
+    state.drawn = {};
+    saveState();
+    refreshRemain();
+    fillAnim = null;
+    if (state.mode === 'locked') {
+      state.mode = 'idle';
+      resetBtn.classList.remove('locked');
+      idleStatus();
+    }
+    sfx.coin();
+  });
+  $('cfgSave').addEventListener('click', function () {
+    collectPanel();
+    // 校验与清理
+    editing.options = editing.options.slice(0, MAX_OPTIONS);
+    editing.options.forEach(function (o, i) {
+      o.label = (o.label || '').trim() || '选项' + (i + 1);
+      o.prizes = Math.max(1, Math.min(MAX_PRIZES, o.prizes | 0));
+    });
+    if (editing.options.length < 2) editing.options = defaultConfig().options.slice(0, 2);
+    // 丢弃越界进度
+    var nd = {};
+    Object.keys(state.drawn).forEach(function (k) {
+      var p = k.split(':');
+      var oi = +p[0], pj = +p[1];
+      if (oi < editing.options.length && pj < editing.options[oi].prizes) nd[k] = state.drawn[k];
+    });
+    state.drawn = nd;
+    state.config = editing;
+    saveState();
+    refreshRemain();
+    applyThemeUI();
+    closePanel();
+    setStatus('设置已应用：' + editing.options.length + ' 个选项，共 ' + totalPrizes() + ' 个奖品');
+    if (isAllDone() && state.mode !== 'locked') enterLocked();
+  });
+
+  // ---------- 静音 / 徽章 ----------
   function applyMute() { muteBtn.textContent = state.muted ? '声音 关' : '声音 开'; }
   muteBtn.addEventListener('click', function () { state.muted = !state.muted; saveState(); applyMute(); });
+  badgeBtn.addEventListener('click', function () {
+    if (state.mode !== 'idle') return;   // 抽奖进行中主题锁定
+    toggleTheme();
+  });
 
   // ---------- 输入 ----------
   cv.addEventListener('click', function (e) {
@@ -782,6 +973,9 @@
   if (document.fonts && document.fonts.load) document.fonts.load('22px FusionPixel');
   requestAnimationFrame(loop);
 
-  // 调试钩子（内部用；testSpecial 用于彩排周日下午特别奖励，reset 跳过演出直接清空）
-  window.__pill = { state: state, toggleTheme: toggleTheme, trigger: triggerDraw, reset: actualReset, testSpecial: function () { playClip('sun_pm'); } };
+  // 调试钩子（内部用；testSpecial 触发隐藏大奖结算）
+  window.__pill = {
+    state: state, toggleTheme: toggleTheme, trigger: triggerDraw, reset: actualReset,
+    testSpecial: function () { var o = state.config.options.length - 1; playClip(slotKey(o, state.config.options[o].prizes - 1)); },
+  };
 })();
