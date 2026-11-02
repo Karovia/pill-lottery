@@ -1,0 +1,136 @@
+/* ===== 吃药大转盘 · 极简像素风 ===== */
+@font-face {
+  font-family: 'FusionPixel';
+  src: url('../assets/fonts/fusion-pixel-12px-proportional-zh_hans.otf.woff2') format('woff2');
+  font-display: swap;
+}
+
+:root {
+  --bg: #f7f7f7;
+  --ink: #2b2b2b;
+  --soft: #8a8a8a;
+  --red: #e53935;
+  --red-dark: #7f1d1d;
+}
+
+/* 注意：昼夜的 --bg/--ink/--soft 由 js/app.js 每帧按 themeMix 写到 html 内联变量，
+   画布与页面共用同一调色板，天然同步。这里不定义 night 覆盖。 */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'FusionPixel', 'PingFang SC', 'Microsoft YaHei', monospace;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  display: flex; flex-direction: column; align-items: center;
+  -webkit-font-smoothing: none;
+}
+
+canvas { image-rendering: pixelated; image-rendering: crisp-edges; }
+
+/* 顶栏 */
+.topbar {
+  width: 100%; max-width: 760px;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 16px 0;
+}
+.title { font-size: 20px; letter-spacing: 4px; }
+.right { display: flex; align-items: center; gap: 16px; }
+.remain { font-size: 13px; color: var(--soft); }
+.text-btn {
+  font-family: inherit; font-size: 12px;
+  background: none; border: none; color: var(--soft);
+  cursor: pointer; padding: 4px 2px;
+  border-bottom: 2px solid transparent;
+}
+.text-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* 红色圆形 RESET 按钮（拟物）+ 像素方块环形进度 */
+.red-wrap { position: relative; width: 96px; height: 96px; display: flex; align-items: center; justify-content: center; }
+.pixel-ring span {
+  position: absolute; width: 7px; height: 7px;
+  background: rgba(229, 57, 53, 0.22);
+}
+.pixel-ring span.lit { background: var(--red); box-shadow: 0 0 0 1px var(--red-dark); }
+.red-btn {
+  position: relative; z-index: 2;
+  width: 64px; height: 64px; border-radius: 50%;
+  border: 3px solid var(--red-dark);
+  background: radial-gradient(circle at 34% 28%, #ff7068 0%, var(--red) 52%, #c62828 100%);
+  color: #fff; font-family: inherit; font-size: 11px; letter-spacing: 1px;
+  cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none;
+  box-shadow: 0 7px 0 var(--red-dark), 0 10px 14px rgba(0, 0, 0, 0.28);
+  transition: transform 0.06s steps(2), box-shadow 0.06s steps(2);
+}
+.red-btn:active, .red-btn.holding {
+  transform: translateY(6px);
+  box-shadow: 0 1px 0 var(--red-dark), 0 3px 5px rgba(0, 0, 0, 0.28);
+}
+@keyframes glow {
+  0%, 100% { box-shadow: 0 7px 0 var(--red-dark), 0 10px 14px rgba(0,0,0,.28), 0 0 0 0 rgba(229,57,53,.55); }
+  50% { box-shadow: 0 7px 0 var(--red-dark), 0 10px 14px rgba(0,0,0,.28), 0 0 0 12px rgba(229,57,53,0); }
+}
+.red-btn.locked { animation: glow 1.1s infinite; }
+
+/* 主区 */
+main { flex: 1; display: flex; flex-direction: column; align-items: center; padding-top: 6px; }
+
+/* 昼夜徽章：现在抽上午还是下午 */
+.ampm-badge {
+  font-size: 15px; letter-spacing: 2px;
+  padding: 6px 16px; margin-bottom: 8px;
+  background: var(--ink); color: var(--bg);
+  border: 3px solid var(--ink);
+}
+#stage { width: min(92vw, 560px); }
+.status {
+  font-size: 14px; color: var(--ink);
+  min-height: 40px; text-align: center; line-height: 1.8;
+  padding: 4px 12px 0;
+}
+.status .soft { color: var(--soft); }
+@keyframes blink { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0.3; } }
+.status .blink { animation: blink 1.3s steps(1) infinite; }
+
+.footer { font-size: 11px; color: var(--soft); padding: 10px 0 18px; text-align: center; }
+
+/* 结算视频遮罩 */
+.overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex; align-items: center; justify-content: center;
+}
+.hidden { display: none !important; }
+.clip-frame { position: relative; width: min(680px, 94vw); border: 3px solid var(--ink); background: #000; }
+.clip-title {
+  font-size: 12px; color: #fff; background: rgba(0, 0, 0, 0.6);
+  padding: 8px 10px; position: absolute; top: 0; left: 0; right: 0; z-index: 2;
+}
+#clipVideo { width: 100%; display: block; max-height: 70vh; }
+.clip-fallback {
+  min-height: 320px; display: flex; flex-direction: column; gap: 18px;
+  align-items: center; justify-content: center; text-align: center;
+  background: var(--bg); padding: 30px 20px;
+}
+.fallback-quote { font-size: 28px; line-height: 1.7; }
+.fallback-source { font-size: 13px; color: var(--soft); }
+.text-btn.skip {
+  position: absolute; right: 10px; bottom: 10px; z-index: 2;
+  color: #ddd; background: rgba(0, 0, 0, 0.55); padding: 6px 10px;
+  border-bottom: 2px solid #ddd;
+}
+.text-btn.skip:hover { color: #fff; border-bottom-color: #fff; }
+
+/* 周日下午特别奖励 */
+#giftImg { width: 120px; image-rendering: pixelated; }
+.gift-card {
+  background: var(--bg); border: 4px solid var(--ink);
+  box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.5);
+  padding: 30px 40px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  animation: giftPop 0.35s steps(4);
+}
+@keyframes giftPop { from { transform: scale(0.3); } to { transform: scale(1); } }
+.gift-big { font-size: 21px; letter-spacing: 2px; }
+.gift-sub { font-size: 13px; color: var(--soft); }

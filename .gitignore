@@ -1,0 +1,18 @@
+# 影视片段（版权素材，不入库；页面缺失片段时自动降级为台词卡片）
+assets/clips/*.mp4
+assets/clips/credits_*.md
+
+# macOS 应用构建产物
+*.app/
+app-build/
+
+# 未使用的字体语言变体（保留 zh_hans）
+assets/fonts/fusion-pixel-12px-proportional-ja.otf.woff2
+assets/fonts/fusion-pixel-12px-proportional-ko.otf.woff2
+assets/fonts/fusion-pixel-12px-proportional-latin.otf.woff2
+assets/fonts/fusion-pixel-12px-proportional-zh_hant.otf.woff2
+assets/fonts/fusion-pixel-12px-proportional-zh_hk.otf.woff2
+assets/fonts/fusion-pixel-12px-proportional-zh_tw.otf.woff2
+
+.DS_Store
+.tmp_raw/
